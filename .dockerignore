@@ -1,0 +1,21 @@
+.git
+.gitignore
+
+# Never bake configuration into an image layer: `podman history` and `save` would
+# expose it forever. Configuration arrives at run time instead.
+.env
+.env.*
+
+node_modules
+test
+.agents
+
+Dockerfile
+.dockerignore
+README.md
+AGENTS.md
+*.md
+eslint.config.mjs
+.prettierrc.json
+.prettierignore
+tsconfig.json
