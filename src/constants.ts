@@ -22,6 +22,7 @@ export const ENV_VARS = {
     mcpAuthToken: 'MCP_AUTH_TOKEN',
     mcpAllowedHosts: 'MCP_ALLOWED_HOSTS',
     mcpAllowedOrigins: 'MCP_ALLOWED_ORIGINS',
+    mcpLogLevel: 'MCP_LOG_LEVEL',
 } as const
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
@@ -30,6 +31,15 @@ export const DEFAULT_HTTP_PATH = '/mcp'
 
 /** Addresses that are only reachable from the server machine itself. */
 export const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'] as const
+
+/**
+ * How much the server writes to stderr. `off` silences everything except the
+ * startup line; `info` adds one summary per request; `debug` also prints the
+ * headers a client sent before the request is handled.
+ */
+export const LOG_LEVELS = ['off', 'info', 'debug'] as const
+export type LogLevel = (typeof LOG_LEVELS)[number]
+export const DEFAULT_LOG_LEVEL: LogLevel = 'info'
 
 /**
  * The MCP authorization model requires a bearer token whenever the endpoint is

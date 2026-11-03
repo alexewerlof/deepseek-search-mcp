@@ -107,7 +107,8 @@ node --env-file=prod.env src/main.ts
 | `MCP_HTTP_PATH` | `/mcp` | |
 | `MCP_AUTH_TOKEN` | — | ≥32 characters |
 | `MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames/IPs |
-| `MCP_ALLOWED_ORIGINS` | — | Only for browser clients |
+| `MCP_ALLOWED_ORIGINS` | — | Only for browser clients; a Chrome extension sends `chrome-extension://<id>` |
+| `MCP_LOG_LEVEL` | `info` | `off`, `info` or `debug`; one line per request on stderr |
 
 ## Keeping these files in sync
 
@@ -121,6 +122,7 @@ describes it **in the same change**:
 | Retry policy, error mapping or output caps | `src/deepseek/AGENTS.md`, `.agents/skills/deepseek-search-fetch/references/errors-limits-billing.md` |
 | An environment variable | the table above, `.env.example`, the README configuration section |
 | Transport, auth or binding rules | `src/AGENTS.md`, `.agents/skills/mcp-server-design/references/remote-http-hosting.md` |
+| A log line, a log level or a rejection hint | `src/logging.ts`, the README debugging section |
 | An npm script | the commands table above, the README development section |
 | The image, its build context, or the defaults it sets | the README container section |
 | A documentation example containing a host, IP or name | keep it inside the RFC 5737 / RFC 2606 ranges |

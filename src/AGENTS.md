@@ -7,7 +7,9 @@ of it performs I/O at import time.
 
 ```
 main.ts ──► config.ts ──► constants.ts (env names, defaults)
+   │            └──────► logging.ts (log levels, rejection diagnosis)
    ├──────► http.ts ──► auth.ts
+   │            ├─────► logging.ts
    │            └─────► server.ts ──► tools/search.ts
    │                        │        └ tools/fetch.ts
    │                        └──────► deepseek/client.ts ──► schemas.ts, errors.ts, constants.ts
@@ -21,7 +23,8 @@ main.ts ──► config.ts ──► constants.ts (env names, defaults)
 | `constants.ts` | Server identity, environment variable names, HTTP defaults, auth limits |
 | `config.ts` | Validated configuration, refusal to expose an unauthenticated endpoint |
 | `auth.ts` | Static bearer token verifier, constant-time comparison |
-| `http.ts` | Express app, DNS rebinding guards, bearer gate, listener, graceful close |
+| `logging.ts` | Log levels, the stderr logger, and the auth/guard diagnosis attached to a rejected request |
+| `http.ts` | Express app, DNS rebinding guards, bearer gate, listener, graceful close, request log |
 | `server.ts` | `createServer()` factory: registers both tools on a fresh `McpServer` |
 | `main.ts` | Loads config, builds the client, starts the server, handles signals |
 
@@ -42,6 +45,10 @@ main.ts ──► config.ts ──► constants.ts (env names, defaults)
 7. **Configuration is read from `process.env` only.** `loadConfig` never opens a
    file; `npm start` passes `--env-file-if-exists=.env` and Node loads it before
    any module runs. This is what lets the container image ship without config.
+8. **Diagnostics go through `logging.ts`, to stderr.** Never log the bearer token,
+   the DeepSeek key, an `Authorization` header value, or a request or response
+   body. A rejected request must still produce a line, so the logger is mounted
+   before the SDK guards.
 
 ## Adding a new tool
 

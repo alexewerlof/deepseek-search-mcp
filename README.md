@@ -82,6 +82,15 @@ MCP_ALLOWED_HOSTS=198.51.100.10,server.example
 This is what stops DNS rebinding, where a malicious web page resolves its own
 domain to your server's address.
 
+Browser clients — a Chrome extension, for example — also send an `Origin` header.
+On a loopback bind the server accepts only `localhost`, `127.0.0.1` and `[::1]`
+unless `MCP_ALLOWED_ORIGINS` says otherwise, and an extension's origin is
+`chrome-extension://<extension-id>`, so list either that id or
+`chrome-extension://*` for every extension of that scheme. Setting the variable
+replaces the loopback defaults: keep `localhost,127.0.0.1,[::1]` in the list if a
+local web page also calls the server. An `Origin` that is not listed is a `403`,
+and the log line says `blocked=origin`.
+
 Every address in this README comes from a range reserved for documentation —
 `198.51.100.0/24` ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)) and the
 `.example` TLD ([RFC 2606](https://www.rfc-editor.org/rfc/rfc2606)) — so none of
@@ -111,7 +120,39 @@ curl -i http://198.51.100.10:8765/mcp \
 
 A `200` listing `deepseek_search` and `deepseek_fetch` means the transport and the
 token both work. A `401` means the token does not match; a `403` means the
-`Host` header is not in the allowlist.
+`Host` header is not in the allowlist, or an `Origin` header is not — read the log
+line, it says which one and names the variable to change.
+
+### Debugging requests
+
+Every request produces one summary line on stderr, including requests a guard or
+the auth check rejects before any tool runs:
+
+```text
+[deepseek-search-mcp] logging info; auth bearer token required; host check 127.0.0.1,localhost,[::1]; origin check 127.0.0.1,localhost,[::1]
+[deepseek-search-mcp] #4 POST /mcp 403 1ms auth=not-checked host=127.0.0.1:8765 origin=chrome-extension://abcdefghijklmnop blocked=origin
+[deepseek-search-mcp] #4 reason="Invalid Origin: abcdefghijklmnop"
+[deepseek-search-mcp] #4 hint="add abcdefghijklmnop to MCP_ALLOWED_ORIGINS, or chrome-extension://* for every origin of that scheme"
+```
+
+The summary carries the method, path, status, duration, the `Host` and `Origin`
+the client sent, and how the bearer check ended: `disabled`, `none`,
+`malformed`, `rejected`, `accepted`, or `not-checked` when a guard or a wrong
+path answered first. A rejected request adds `blocked=host` or `blocked=origin`,
+the guard's own message, and the setting that fixes it. A request that failed for
+some other reason after the token check reports `auth=unknown`, so a failure is
+never blamed on the token by default. `client=closed` marks a client that
+disconnected before the response finished.
+
+| `MCP_LOG_LEVEL` | Output |
+| --- | --- |
+| `off` | Startup line only |
+| `info` (default) | One summary line per request, plus a reason and hint for a rejected one |
+| `debug` | Also a `received` line with the headers the client sent |
+
+No level prints the bearer token, a request body, or a response body. A call that
+produces no log line at all never reached this process — check the client's host
+permissions or firewall, the port, and that the URL ends in `/mcp`.
 
 ## Container
 
@@ -324,7 +365,9 @@ and API facts live in [.agents/skills](.agents/skills).
 | Container exits immediately | Same as above: read `podman logs`, it prints the missing variable |
 | `MCP_AUTH_TOKEN must be at least 32 characters` | Token too short; `openssl rand -hex 32` |
 | `401` from curl, LM Studio or Jan | Token mismatch, or the client sends no `Authorization` header |
-| `403` | `MCP_ALLOWED_HOSTS` does not contain the hostname the client used |
+| `403` with `blocked=host` in the log | `MCP_ALLOWED_HOSTS` does not contain the hostname the client used |
+| Extension calls fail with `403` while curl succeeds | The extension's `Origin` (`chrome-extension://<id>`) is not in `MCP_ALLOWED_ORIGINS` |
+| No log line for a client call | The request never arrived: check host permissions, firewall, port, and the `/mcp` path |
 | Jan shows the server as connected but offers no tools | URL missing `/mcp`, or the selected model has no tool support |
 | Tools listed but every call fails with 402 | DeepSeek balance is empty |
 | `429` | Rate limit; wait, or reduce parallelism |

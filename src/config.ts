@@ -2,9 +2,12 @@ import {
     DEFAULT_HTTP_HOST,
     DEFAULT_HTTP_PORT,
     DEFAULT_HTTP_PATH,
+    DEFAULT_LOG_LEVEL,
     ENV_VARS,
+    LOG_LEVELS,
     LOOPBACK_HOSTS,
     MIN_AUTH_TOKEN_LENGTH,
+    type LogLevel,
 } from './constants.ts'
 import {
     DEFAULT_BASE_URL,
@@ -18,6 +21,7 @@ import {
     MAX_SEARCH_COUNT,
     MIN_SEARCH_COUNT,
 } from './deepseek/constants.ts'
+import { isLogLevel } from './logging.ts'
 import type { FetchToolOptions } from './tools/fetch.ts'
 import type { SearchToolOptions } from './tools/search.ts'
 
@@ -42,6 +46,7 @@ export type HttpConfig = {
 export type ServerConfig = {
     deepseek: DeepSeekConfig
     http: HttpConfig
+    logLevel: LogLevel
 }
 
 export type LoadConfigOptions = {
@@ -86,6 +91,7 @@ export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
     validateNetworkExposure(host, authToken, allowedHosts)
 
     return {
+        logLevel: readLogLevel(read),
         deepseek: {
             apiKey,
             baseUrl: read(ENV_VARS.deepseekBaseUrl) ?? DEFAULT_BASE_URL,
@@ -135,6 +141,17 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 type Reader = (name: string) => string | undefined
+
+/** An unknown level is a typo, not a preference: name the accepted values. */
+function readLogLevel(read: Reader): LogLevel {
+    const raw = read(ENV_VARS.mcpLogLevel)
+    if (raw === undefined) return DEFAULT_LOG_LEVEL
+
+    if (!isLogLevel(raw)) {
+        throw new ConfigError(`${ENV_VARS.mcpLogLevel} must be one of ${LOG_LEVELS.join(', ')}, got "${raw}".`)
+    }
+    return raw
+}
 
 /** A blank value means "unset", so a commented-out line in `.env` keeps the default. */
 function createReader(env: NodeJS.ProcessEnv): Reader {

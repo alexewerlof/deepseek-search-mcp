@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { request } from 'node:http'
-import { describe, it } from 'node:test'
+import { describe, it, type TestContext } from 'node:test'
 import type { ServerConfig } from '../../src/config.ts'
+import type { LogLevel } from '../../src/constants.ts'
 import type { DeepSeekSearchAndFetch } from '../../src/deepseek/client.ts'
-import { startHttpServer } from '../../src/http.ts'
+import { startHttpServer, type RunningHttpServer } from '../../src/http.ts'
+import { createLogger, type Logger } from '../../src/logging.ts'
 
 const TOKEN = 'integration-token-0123456789abcdef'
 const JSON_RPC_HEADERS = {
@@ -18,6 +20,7 @@ const stubClient: DeepSeekSearchAndFetch = {
 
 function createConfig(): ServerConfig {
     return {
+        logLevel: 'info',
         deepseek: {
             apiKey: 'sk-test',
             baseUrl: 'https://example.invalid',
@@ -45,6 +48,45 @@ function toolsListRequest(headers: Record<string, string> = {}): RequestInit {
     }
 }
 
+async function startTestServer(
+    t: TestContext,
+    options: { config?: ServerConfig; logger?: Logger } = {},
+): Promise<RunningHttpServer> {
+    const config = options.config ?? createConfig()
+    const server = await startHttpServer(config, {
+        client: stubClient,
+        search: config.deepseek.search,
+        fetch: config.deepseek.fetch,
+        logger: options.logger,
+    })
+    t.after(() => server.close())
+    return server
+}
+
+/** A logger whose lines a test can inspect, with no dependency on `console`. */
+function captureLogger(level: LogLevel): { logger: Logger; lines: string[] } {
+    const lines: string[] = []
+    return { logger: createLogger(level, (line) => lines.push(line)), lines }
+}
+
+const LOG_WAIT_MS = 1_000
+const LOG_POLL_MS = 10
+
+/**
+ * The summary is written when the response ends, which can trail the moment the
+ * client has read the last byte, so give the event loop a bounded chance first.
+ */
+async function waitForLine(lines: string[], matches: (line: string) => boolean): Promise<string> {
+    const deadline = Date.now() + LOG_WAIT_MS
+    while (Date.now() < deadline) {
+        const found = lines.find(matches)
+        if (found !== undefined) return found
+        await new Promise((resolve) => setTimeout(resolve, LOG_POLL_MS))
+    }
+
+    assert.fail(`no matching log line; captured: ${lines.join(' | ') || '(none)'}`)
+}
+
 /**
  * The endpoint answers 2025-era clients with an SSE stream, which is what LM
  * Studio receives. Read either shape.
@@ -61,7 +103,7 @@ async function readRpcPayload(response: Response): Promise<unknown> {
 }
 
 /** `fetch` strips the `Host` header, so DNS rebinding checks need a raw request. */
-function postWithHostHeader(url: string, hostHeader: string): Promise<number> {
+function postWithHeaders(url: string, headers: Record<string, string>): Promise<number> {
     return new Promise((resolve, reject) => {
         const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
         const outgoing = request(
@@ -71,8 +113,9 @@ function postWithHostHeader(url: string, hostHeader: string): Promise<number> {
                 headers: {
                     ...JSON_RPC_HEADERS,
                     authorization: `Bearer ${TOKEN}`,
-                    host: hostHeader,
+                    host: new URL(url).host,
                     'content-length': String(Buffer.byteLength(payload)),
+                    ...headers,
                 },
             },
             (incoming) => {
@@ -88,13 +131,7 @@ function postWithHostHeader(url: string, hostHeader: string): Promise<number> {
 
 describe('HTTP endpoint', () => {
     it('rejects requests without a bearer token', async (t) => {
-        const config = createConfig()
-        const server = await startHttpServer(config, {
-            client: stubClient,
-            search: config.deepseek.search,
-            fetch: config.deepseek.fetch,
-        })
-        t.after(() => server.close())
+        const server = await startTestServer(t)
 
         const response = await fetch(server.url, toolsListRequest())
 
@@ -103,13 +140,7 @@ describe('HTTP endpoint', () => {
     })
 
     it('rejects a wrong bearer token', async (t) => {
-        const config = createConfig()
-        const server = await startHttpServer(config, {
-            client: stubClient,
-            search: config.deepseek.search,
-            fetch: config.deepseek.fetch,
-        })
-        t.after(() => server.close())
+        const server = await startTestServer(t)
 
         const response = await fetch(
             server.url,
@@ -120,13 +151,7 @@ describe('HTTP endpoint', () => {
     })
 
     it('serves tools/list for a valid token', async (t) => {
-        const config = createConfig()
-        const server = await startHttpServer(config, {
-            client: stubClient,
-            search: config.deepseek.search,
-            fetch: config.deepseek.fetch,
-        })
-        t.after(() => server.close())
+        const server = await startTestServer(t)
 
         const response = await fetch(server.url, toolsListRequest({ authorization: `Bearer ${TOKEN}` }))
 
@@ -138,16 +163,142 @@ describe('HTTP endpoint', () => {
     })
 
     it('rejects a foreign Host header', async (t) => {
-        const config = createConfig()
-        const server = await startHttpServer(config, {
-            client: stubClient,
-            search: config.deepseek.search,
-            fetch: config.deepseek.fetch,
-        })
-        t.after(() => server.close())
+        const server = await startTestServer(t)
 
-        const status = await postWithHostHeader(server.url, 'attacker.example')
+        const status = await postWithHeaders(server.url, { host: 'attacker.example' })
 
         assert.equal(status, 403)
+    })
+})
+
+describe('request logging', () => {
+    it('records a successful request with the auth outcome', async (t) => {
+        const capture = captureLogger('info')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const response = await fetch(server.url, toolsListRequest({ authorization: `Bearer ${TOKEN}` }))
+        await response.text()
+
+        const summary = await waitForLine(capture.lines, (line) => line.includes('POST /mcp 200'))
+        assert.match(summary, /auth=accepted/)
+        assert.ok(!summary.includes('blocked='))
+    })
+
+    it('names the missing Authorization header', async (t) => {
+        const capture = captureLogger('info')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const response = await fetch(server.url, toolsListRequest())
+        await response.text()
+
+        const summary = await waitForLine(capture.lines, (line) => line.includes('POST /mcp 401'))
+        assert.match(summary, /auth=none/)
+
+        const reason = await waitForLine(capture.lines, (line) => line.includes('reason='))
+        assert.match(reason, /Authorization/)
+    })
+
+    it('blames the host guard for a foreign Host header', async (t) => {
+        const capture = captureLogger('info')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const status = await postWithHeaders(server.url, { host: 'attacker.example' })
+        assert.equal(status, 403)
+
+        const summary = await waitForLine(capture.lines, (line) => line.includes(' 403 '))
+        assert.match(summary, /blocked=host/)
+        assert.match(summary, /auth=not-checked/)
+
+        const hint = await waitForLine(capture.lines, (line) => line.includes('hint='))
+        assert.match(hint, /MCP_ALLOWED_HOSTS/)
+        assert.match(hint, /attacker\.example/)
+    })
+
+    it('blames the origin guard for a browser extension origin', async (t) => {
+        const capture = captureLogger('info')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const status = await postWithHeaders(server.url, { origin: 'chrome-extension://abcdefghijklmnop' })
+        assert.equal(status, 403)
+
+        const summary = await waitForLine(capture.lines, (line) => line.includes(' 403 '))
+        assert.match(summary, /blocked=origin/)
+        assert.match(summary, /auth=not-checked/)
+        assert.match(summary, /origin=chrome-extension:\/\/abcdefghijklmnop/)
+
+        const hint = await waitForLine(capture.lines, (line) => line.includes('hint='))
+        assert.match(hint, /MCP_ALLOWED_ORIGINS/)
+        assert.match(hint, /chrome-extension:\/\/\*/)
+    })
+
+    it('points out a request that missed the endpoint path', async (t) => {
+        const capture = captureLogger('info')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const status = await postWithHeaders(server.url.replace('/mcp', '/'), {})
+        assert.equal(status, 404)
+
+        const summary = await waitForLine(capture.lines, (line) => line.includes('POST / 404'))
+        assert.match(summary, /auth=not-checked/)
+
+        const hint = await waitForLine(capture.lines, (line) => line.includes('hint='))
+        assert.match(hint, /POST to \/mcp/)
+    })
+
+    it('accepts an origin listed in MCP_ALLOWED_ORIGINS', async (t) => {
+        const config = createConfig()
+        config.http.allowedOrigins = ['chrome-extension://*']
+        const capture = captureLogger('info')
+        const server = await startTestServer(t, { config, logger: capture.logger })
+
+        const response = await fetch(server.url, toolsListRequest({ authorization: `Bearer ${TOKEN}` }))
+        await response.text()
+        assert.equal(response.status, 200)
+
+        const summary = await waitForLine(capture.lines, (line) => line.includes('POST /mcp 200'))
+        assert.match(summary, /auth=accepted/)
+        assert.ok(!summary.includes('blocked='))
+    })
+
+    it('prints the headers a client sent at debug level', async (t) => {
+        const capture = captureLogger('debug')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const response = await fetch(server.url, toolsListRequest({ authorization: `Bearer ${TOKEN}` }))
+        await response.text()
+
+        const line = await waitForLine(capture.lines, (entry) => entry.includes('received'))
+        assert.match(line, /host=127\.0\.0\.1:\d+/)
+        assert.match(line, /auth=present/)
+        assert.match(line, /content-type=application\/json/)
+    })
+
+    it('writes nothing when the level is off', async (t) => {
+        const capture = captureLogger('off')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const response = await fetch(server.url, toolsListRequest({ authorization: `Bearer ${TOKEN}` }))
+        await response.text()
+        assert.equal(response.status, 200)
+
+        assert.deepEqual(capture.lines, [])
+    })
+
+    it('never writes the bearer token to the log', async (t) => {
+        const capture = captureLogger('debug')
+        const server = await startTestServer(t, { logger: capture.logger })
+
+        const response = await fetch(
+            server.url,
+            toolsListRequest({ authorization: 'Bearer wrong-but-long-enough-token-value' }),
+        )
+        await response.text()
+        assert.equal(response.status, 401)
+
+        await waitForLine(capture.lines, (line) => line.includes('POST /mcp 401'))
+        for (const line of capture.lines) {
+            assert.ok(!line.includes(TOKEN), `a log line leaked the token: ${line}`)
+            assert.ok(!line.includes('wrong-but-long-enough-token-value'), `a log line leaked the token: ${line}`)
+        }
     })
 })

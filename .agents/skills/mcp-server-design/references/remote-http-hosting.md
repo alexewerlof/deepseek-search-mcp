@@ -67,7 +67,9 @@ from the same factory by default (`legacy: 'stateless'` / `'serve'`). Do not set
 | --- | --- |
 | Tools missing from the list | Server not reachable, or `url` points at the root instead of `/mcp` |
 | `401` in the LM Studio logs | Token mismatch, or a 2025-era client sending no `Authorization` |
-| `403` | `Host`/`Origin` allowlist missing or wrong |
+| `403`, log says `blocked=host` | `MCP_ALLOWED_HOSTS` does not contain the hostname the client used |
+| `403`, log says `blocked=origin` | A browser or extension client: its `Origin` is not in `MCP_ALLOWED_ORIGINS`. A Chrome extension sends `chrome-extension://<id>`; list the id or `chrome-extension://*`. Setting the variable replaces the loopback defaults |
+| No log line for a client call | The request never reached the server: host permissions, firewall, port or path |
 | Calls succeed from curl but not from LM Studio | Client sends no `Origin` header, or the endpoint expects a path prefix |
 | Context overflows after one call | Tool output is too large; lower result counts and page caps |
 

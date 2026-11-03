@@ -20,7 +20,8 @@ always use the scripts.
 | `client.test.ts` | Request mapping, retry matrix, timeout wording, response validation |
 | `format.test.ts` | Truncation, summary-over-snippet, empty results |
 | `tools.test.ts` | Real MCP surface over `InMemoryTransport`: happy path, schema rejection, `isError` |
-| `http.test.ts` | Real socket: 401/200, wrong token, foreign `Host` → 403 |
+| `http.test.ts` | Real socket: 401/200, wrong token, foreign `Host` → 403, request log lines |
+| `logging.test.ts` | Level filtering, auth outcome, guard attribution via the SDK validators |
 
 Rules:
 

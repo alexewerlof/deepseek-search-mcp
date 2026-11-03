@@ -34,6 +34,7 @@ describe('loadConfig', () => {
         const config = load({ DEEPSEEK_API_KEY: 'sk-test' })
 
         assert.equal(config.deepseek.apiKey, 'sk-test')
+        assert.equal(config.logLevel, 'info')
         assert.equal(config.deepseek.baseUrl, 'https://api.deepseek.com')
         assert.equal(config.deepseek.timeoutMs, 30_000)
         assert.equal(config.deepseek.maxRetries, 2)
@@ -105,6 +106,19 @@ describe('loadConfig validation', () => {
         expectConfigError(
             () => load({ DEEPSEEK_API_KEY: 'sk-test', DEEPSEEK_SEARCH_MAX_RESULTS: '99' }),
             /DEEPSEEK_SEARCH_MAX_RESULTS/,
+        )
+    })
+
+    it('accepts every documented log level', () => {
+        for (const level of ['off', 'info', 'debug']) {
+            assert.equal(load({ DEEPSEEK_API_KEY: 'sk-test', MCP_LOG_LEVEL: level }).logLevel, level)
+        }
+    })
+
+    it('rejects an unknown log level and names the accepted values', () => {
+        expectConfigError(
+            () => load({ DEEPSEEK_API_KEY: 'sk-test', MCP_LOG_LEVEL: 'verbose' }),
+            /MCP_LOG_LEVEL must be one of off, info, debug/,
         )
     })
 })
