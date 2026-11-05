@@ -34,10 +34,15 @@ env:
 jobs:
     verify:
         name: Verify
-        runs-on: ubuntu-latest
+        # Pinned rather than `ubuntu-latest`: that label moves from Ubuntu 24.04
+        # to 26.04 over October–November 2026, which would swap the build OS
+        # under a running workflow. Bumping the pin is a deliberate change.
+        runs-on: ubuntu-24.04
         steps:
+            # `checkout@v5` and newer run on Node 24; older majors still ask for
+            # Node 20, which the runners no longer provide.
             - uses: actions/checkout@v5
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v7
               with:
                   node-version: 24
                   cache: npm
@@ -51,15 +56,15 @@ jobs:
     image:
         name: Build image
         needs: verify
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         steps:
             - uses: actions/checkout@v5
 
-            - uses: docker/setup-buildx-action@v3
+            - uses: docker/setup-buildx-action@v4
 
             - name: Derive tags and labels
               id: meta
-              uses: docker/metadata-action@v5
+              uses: docker/metadata-action@v6
               with:
                   images: ${{ env.IMAGE }}
                   tags: |
@@ -73,14 +78,14 @@ jobs:
             # read-only and the login step is skipped.
             - name: Log in to GHCR
               if: github.event_name != 'pull_request'
-              uses: docker/login-action@v3
+              uses: docker/login-action@v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Build and push
-              uses: docker/build-push-action@v6
+              uses: docker/build-push-action@v7
               with:
                   context: .
                   platforms: linux/amd64,linux/arm64
