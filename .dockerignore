@@ -10,6 +10,11 @@ node_modules
 test
 .agents
 
+# Not part of the runtime image: the CI definition is read from the repo, and
+# `deploy/` is documentation for the host machine.
+.github
+deploy
+
 Dockerfile
 .dockerignore
 README.md

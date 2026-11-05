@@ -10,6 +10,7 @@
     "scripts": {
         "start": "node --env-file-if-exists=.env src/main.ts",
         "fmt": "prettier --write .",
+        "fmt:check": "prettier --check .",
         "lint": "eslint .",
         "typecheck": "tsc --noEmit",
         "test:unit": "node --test \"test/unit/**/*.test.ts\"",

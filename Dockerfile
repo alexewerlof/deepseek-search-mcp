@@ -4,6 +4,12 @@
 # runtime plus `src/`. No `.env` is copied in, deliberately — see .dockerignore.
 FROM node:24-alpine
 
+# `image.source` links the GHCR package to this repository, which is what makes
+# the package inherit the repo's visibility and permissions.
+LABEL org.opencontainers.image.source="https://github.com/alexewerlof/deepseek-search-mcp" \
+      org.opencontainers.image.description="DeepSeek Search and Fetch as MCP tools over Streamable HTTP" \
+      org.opencontainers.image.licenses="MIT"
+
 WORKDIR /app
 
 # Dependencies first, so editing source does not reinstall them.

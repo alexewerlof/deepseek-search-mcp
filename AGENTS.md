@@ -12,12 +12,14 @@ Start here, then read the `AGENTS.md` in the folder you are about to change.
 | --- | --- | --- |
 | `npm start` | Runs the HTTP server from `src/main.ts`, loading `.env` when present | Manual verification |
 | `npm run fmt` | Prettier, using the repo config | Before every commit |
+| `npm run fmt:check` | Prettier in check mode; writes nothing | CI, and before a commit when unsure |
 | `npm run lint` | ESLint (flat config, recommended presets only) | Before every commit |
 | `npm run typecheck` | `tsc --noEmit` | Before every commit |
 | `npm run test:unit` | Offline tests, no network, no cost | Before every commit |
 | `npm run test:live` | Real DeepSeek calls; skips without a key | Only when changing API interaction |
 
-Order for a change: `fmt` → `lint` → `typecheck` → `test:unit`.
+Order for a change: `fmt` → `lint` → `typecheck` → `test:unit`. CI runs each of
+them on every push, in that order, before it builds an image.
 
 ## Non-negotiables
 
@@ -49,6 +51,10 @@ Order for a change: `fmt` → `lint` → `typecheck` → `test:unit`.
 9. **Never bake configuration into the image.** `.dockerignore` excludes `.env`;
    the container is configured at run time through `-e` or `--env-file`. A key in
    a layer survives in `history`/`save` output and cannot be rotated away.
+10. **CI publishes, it never builds in a secret.** The publish workflow passes
+    nothing to `docker build`: no `build-args`, no `secrets:`. If a build starts
+    needing one, the design is wrong — fix the design. The registry is written
+    with `GITHUB_TOKEN` only, and the host pulls with a read-only credential.
 
 ## Directory map
 
@@ -59,6 +65,8 @@ Order for a change: `fmt` → `lint` → `typecheck` → `test:unit`.
 | `src/tools/` | The two MCP tools and their output contracts | [src/tools/AGENTS.md](src/tools/AGENTS.md) |
 | `test/` | Offline unit tests and opt-in live checks | [test/AGENTS.md](test/AGENTS.md) |
 | `.agents/skills/` | Repo skills: MCP design, TS SDK recipes, DeepSeek API facts | [.agents/skills/AGENTS.md](.agents/skills/AGENTS.md) |
+| `.github/workflows/` | CI: verify, then build and publish the image to GHCR | — |
+| `deploy/` | Quadlet unit and environment template for the Fedora host | — |
 | `.env` (untracked) | Live credentials; gitignored | — |
 | `.env.example` | Documented list of every supported variable | — |
 | `Dockerfile`, `.dockerignore` | Container image: dependencies and `src/` only, never config | — |
@@ -125,6 +133,7 @@ describes it **in the same change**:
 | A log line, a log level or a rejection hint | `src/logging.ts`, the README debugging section |
 | An npm script | the commands table above, the README development section |
 | The image, its build context, or the defaults it sets | the README container section |
+| The workflow, the tag scheme, the registry path or the deploy unit | the README container section, and the `deploy/` files themselves |
 | A documentation example containing a host, IP or name | keep it inside the RFC 5737 / RFC 2606 ranges |
 | Add or remove a directory | the directory map above, plus the new folder's `AGENTS.md` |
 | A skill's workflow | its `SKILL.md` and `.agents/skills/AGENTS.md` if the layout changed |

@@ -160,14 +160,49 @@ The image has no `.env`, and that is on purpose: a key baked into a layer stays
 readable in `podman history` and `podman save` long after you think you rotated
 it. All configuration arrives at run time, through the variables below.
 
+### Published image
+
+Every push publishes an image to GitHub Container Registry, so a machine that
+only runs the server needs Podman and a pull token, not Node.js or a checkout.
+Images are built for `linux/amd64` and `linux/arm64`.
+
+| Tag | Moves | Use |
+| --- | --- | --- |
+| `sha-abcdef0` | never | The identity of one build; cite this when something breaks |
+| `latest` | every push to `main` | A moving alias, convenient on a host you keep current |
+| `1.2.3`, `1.2` | on a `v1.2.3` tag | A release you can pin |
+
+The package starts private, so log in once. A token that can only read packages
+is enough on a machine that just runs the server — never give it write access:
+
+```bash
+printf '%s' "$GHCR_TOKEN" | podman login ghcr.io -u <github-user> --password-stdin
+podman pull ghcr.io/alexewerlof/deepseek-search-mcp:latest
+```
+
+For a run that must not change under you, use a digest instead of a tag, or pin
+the `sha-` tag of the build you tested:
+
+```bash
+podman pull ghcr.io/alexewerlof/deepseek-search-mcp@sha256:<digest>
+```
+
+### Build locally
+
 ```bash
 podman build -t deepseek-search-mcp .
 ```
 
-`docker` works the same way. The image binds `0.0.0.0` because a container's
-loopback is not reachable through a published port — and that non-loopback bind
-is exactly what makes `MCP_AUTH_TOKEN` and `MCP_ALLOWED_HOSTS` mandatory. The
-server refuses to start without them rather than expose an open endpoint:
+### Run the container
+
+`docker` works the same way as `podman`. The name at the end of the command is
+the local build; if you pulled the published image instead, use
+`ghcr.io/alexewerlof/deepseek-search-mcp:latest`.
+
+The image binds `0.0.0.0` because a container's loopback is not reachable
+through a published port — and that non-loopback bind is exactly what makes
+`MCP_AUTH_TOKEN` and `MCP_ALLOWED_HOSTS` mandatory. The server refuses to start
+without them rather than expose an open endpoint:
 
 ```bash
 openssl rand -hex 32        # generate once; the same value goes in the client's config
@@ -218,6 +253,57 @@ Verify it with the [`curl` check above](#run) from another machine, then:
 podman stop deepseek-search-mcp     # SIGTERM reaches node, exit code 0
 podman logs deepseek-search-mcp     # startup line and request errors, on stderr
 ```
+
+### Fedora (Quadlet)
+
+Fedora generates the systemd unit from a Quadlet file instead of a compose file,
+so the container starts at boot and restarts on failure. The unit ships in
+[`deploy/deepseek-search-mcp.container`](deploy/deepseek-search-mcp.container),
+with an environment template beside it.
+
+The steps below are rootless: the service runs as your user, with no root and no
+capabilities. Run them as that user from a checkout of this repository.
+
+```bash
+install -d -m 755 ~/.config/containers/systemd
+install -m 644 deploy/deepseek-search-mcp.container ~/.config/containers/systemd/
+install -d -m 700 ~/.config/deepseek-search-mcp
+install -m 600 deploy/deepseek-search-mcp.env.example ~/.config/deepseek-search-mcp/env
+$EDITOR ~/.config/deepseek-search-mcp/env
+
+printf '%s' "$GHCR_TOKEN" | podman login ghcr.io -u <github-user> --password-stdin
+
+systemctl --user daemon-reload
+systemctl --user enable --now deepseek-search-mcp
+systemctl --user enable --now podman-auto-update.timer
+```
+
+There is no `podman run` in this flow: `daemon-reload` reads the Quadlet file and
+generates the unit. A missing `~/.config/deepseek-search-mcp/env` fails the
+start, which is intended — the server refuses to bind off loopback without a
+token and a host allowlist.
+
+```bash
+systemctl --user status deepseek-search-mcp
+journalctl --user -u deepseek-search-mcp -n 20   # startup line and request logs
+curl -i http://198.51.100.10:8765/mcp            # 401, not a timeout
+```
+
+`podman-auto-update.timer` polls daily; it is not triggered by a push. After
+publishing a build, either wait or force it with `podman auto-update`. To freeze
+the host at one build instead, replace `:latest` with the digest printed by
+`podman inspect --format '{{index .RepoDigests 0}}' <image>` and drop
+`AutoUpdate=registry` from the unit.
+
+The unit publishes on the LAN. That port speaks plain HTTP, so the bearer token
+crosses the network in the clear: put Caddy, nginx or a Tailscale/WireGuard
+tunnel in front, or change the line to `PublishPort=127.0.0.1:8765:8765` and
+proxy from the host.
+
+For a system-wide service, move the files to `/etc/containers/systemd/` and
+`/etc/deepseek-search-mcp/env`, use `systemctl` without `--user`, set
+`EnvironmentFile=/etc/deepseek-search-mcp/env`, and change `[Install]` to
+`WantedBy=multi-user.target`.
 
 ## LM Studio
 

@@ -1,0 +1,53 @@
+# Quadlet unit for a rootless Podman service on Fedora.
+#
+# Install (as the user that will run the service):
+#   install -d -m 755 ~/.config/containers/systemd
+#   install -m 644 deploy/deepseek-search-mcp.container ~/.config/containers/systemd/
+#   install -d -m 700 ~/.config/deepseek-search-mcp
+#   install -m 600 deploy/deepseek-search-mcp.env.example ~/.config/deepseek-search-mcp/env
+#   $EDITOR ~/.config/deepseek-search-mcp/env      # fill in the two credentials
+#   podman login ghcr.io                           # read-only token, not a write one
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now deepseek-search-mcp
+#   systemctl --user enable --now podman-auto-update.timer
+#
+# The environment file must exist before the first start: the server refuses to
+# bind off loopback without a token and a host allowlist, so a missing file is a
+# failed start rather than an open endpoint.
+[Unit]
+Description=DeepSeek Search MCP (Streamable HTTP)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/alexewerlof/deepseek-search-mcp:latest
+ContainerName=deepseek-search-mcp
+
+# The image binds 0.0.0.0 internally because a container's loopback is not
+# reachable through a published port. Publish on the LAN so the MCP host on
+# another machine can connect; use `127.0.0.1:8765:8765` instead when a reverse
+# proxy on this host terminates TLS and forwards to the container.
+PublishPort=8765:8765
+
+# Plain KEY=value lines only: no comments, no quotes, no `export`.
+EnvironmentFile=%h/.config/deepseek-search-mcp/env
+
+# The process writes nothing but stderr, so the root filesystem stays read-only.
+ReadOnly=true
+Tmpfs=/tmp
+DropCapability=all
+NoNewPrivileges=true
+Memory=256m
+PidsLimit=128
+
+# Makes `podman auto-update` move to the digest behind :latest. Without the
+# podman-auto-update timer enabled, this flag does nothing.
+AutoUpdate=registry
+
+[Service]
+Restart=always
+# main.ts handles SIGTERM and closes the listener; give it time before a kill.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
