@@ -7,8 +7,9 @@ of it performs I/O at import time.
 
 ```
 main.ts ──► config.ts ──► constants.ts (env names, defaults)
-   │            └──────► logging.ts (log levels, rejection diagnosis)
+   │            └──────► logging.ts (log levels, auth diagnosis)
    ├──────► http.ts ──► auth.ts
+   │            ├─────► guards.ts (Host/Origin checks, rejection bodies)
    │            ├─────► logging.ts
    │            └─────► server.ts ──► tools/search.ts
    │                        │        └ tools/fetch.ts
@@ -23,7 +24,8 @@ main.ts ──► config.ts ──► constants.ts (env names, defaults)
 | `constants.ts` | Server identity, environment variable names, HTTP defaults, auth limits |
 | `config.ts` | Validated configuration, refusal to expose an unauthenticated endpoint |
 | `auth.ts` | Static bearer token verifier, constant-time comparison |
-| `logging.ts` | Log levels, the stderr logger, and the auth/guard diagnosis attached to a rejected request |
+| `guards.ts` | `Host`/`Origin` middleware, and the JSON-RPC body and log hint a rejection produces |
+| `logging.ts` | Log levels, the stderr logger, and the auth diagnosis attached to a request |
 | `http.ts` | Express app, DNS rebinding guards, bearer gate, listener, graceful close, request log |
 | `server.ts` | `createServer()` factory: registers both tools on a fresh `McpServer` |
 | `main.ts` | Loads config, builds the client, starts the server, handles signals |
@@ -40,8 +42,10 @@ main.ts ──► config.ts ──► constants.ts (env names, defaults)
    with a sentence rather than a partially running server.
 5. **Only loopback may run without a token.** `config.ts` enforces it; do not
    weaken that check to make a local test easier.
-6. **`allowedHosts` is required for a non-loopback bind.** Binding elsewhere turns
-   off the adapter's built-in `Host`/`Origin` defaults.
+6. **`Origin` is always validated; `Host` is optional.** `http.ts` installs the
+   origin guard on every bind, defaulting to the loopback hostnames. The host
+   guard exists only when `MCP_ALLOWED_HOSTS` is set. A rejected request gets a
+   `403` whose JSON-RPC `error.data` names the check, the setting and the value.
 7. **Configuration is read from `process.env` only.** `loadConfig` never opens a
    file; `npm start` passes `--env-file-if-exists=.env` and Node loads it before
    any module runs. This is what lets the container image ship without config.

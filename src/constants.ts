@@ -33,6 +33,13 @@ export const DEFAULT_HTTP_PATH = '/mcp'
 export const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'] as const
 
 /**
+ * The one list value that means "check nothing". Only `MCP_ALLOWED_HOSTS`
+ * accepts it: the `Host` guard is a best-effort extra, while the `Origin` guard
+ * is required by the MCP specification and must stay installed.
+ */
+export const LIST_WILDCARD = '*'
+
+/**
  * How much the server writes to stderr. `off` silences everything except the
  * startup line; `info` adds one summary per request; `debug` also prints the
  * headers a client sent before the request is handled.

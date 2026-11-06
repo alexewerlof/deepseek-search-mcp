@@ -65,16 +65,53 @@ describe('loadConfig validation', () => {
         expectConfigError(() => load({ DEEPSEEK_API_KEY: 'sk-test', MCP_HTTP_HOST: LAN_HOST }), /MCP_AUTH_TOKEN/)
     })
 
-    it('refuses a non-loopback bind without allowed hostnames', () => {
-        expectConfigError(
-            () =>
-                load({
-                    DEEPSEEK_API_KEY: 'sk-test',
-                    MCP_HTTP_HOST: LAN_HOST,
-                    MCP_AUTH_TOKEN: VALID_TOKEN,
-                }),
-            /MCP_ALLOWED_HOSTS/,
-        )
+    it('starts a non-loopback bind without an explicit host allowlist', () => {
+        const config = load({
+            DEEPSEEK_API_KEY: 'sk-test',
+            MCP_HTTP_HOST: LAN_HOST,
+            MCP_AUTH_TOKEN: VALID_TOKEN,
+        })
+
+        assert.equal(config.http.host, LAN_HOST)
+        assert.equal(config.http.allowedHosts, undefined)
+        assert.equal(config.http.hostGuardOptOut, false)
+    })
+
+    it('treats a host wildcard as a deliberate opt-out', () => {
+        const config = load({
+            DEEPSEEK_API_KEY: 'sk-test',
+            MCP_HTTP_HOST: LAN_HOST,
+            MCP_AUTH_TOKEN: VALID_TOKEN,
+            MCP_ALLOWED_HOSTS: '*',
+        })
+
+        assert.equal(config.http.allowedHosts, undefined)
+        assert.equal(config.http.hostGuardOptOut, true)
+    })
+
+    it('refuses an origin entry that can never match a request', () => {
+        for (const entry of ['*', 'https://*', 'http://*', 'https://app.example', 'null', `${LAN_HOSTNAME}:3000`]) {
+            expectConfigError(
+                () => load({ DEEPSEEK_API_KEY: 'sk-test', MCP_ALLOWED_ORIGINS: entry }),
+                /MCP_ALLOWED_ORIGINS/,
+            )
+        }
+    })
+
+    it('accepts bare hostnames and a non-http scheme wildcard', () => {
+        const config = load({
+            DEEPSEEK_API_KEY: 'sk-test',
+            MCP_ALLOWED_ORIGINS: `localhost,127.0.0.1,[::1],${LAN_HOSTNAME},abcdefghijklmnop,chrome-extension://*`,
+        })
+
+        assert.deepEqual(config.http.allowedOrigins, [
+            'localhost',
+            '127.0.0.1',
+            '[::1]',
+            LAN_HOSTNAME,
+            'abcdefghijklmnop',
+            'chrome-extension://*',
+        ])
     })
 
     it('accepts a fully configured non-loopback bind and parses the lists', () => {
@@ -83,12 +120,13 @@ describe('loadConfig validation', () => {
             MCP_HTTP_HOST: LAN_HOST,
             MCP_AUTH_TOKEN: VALID_TOKEN,
             MCP_ALLOWED_HOSTS: `${LAN_HOST}, ${LAN_HOSTNAME}`,
-            MCP_ALLOWED_ORIGINS: `http://${LAN_HOST}:3000`,
+            MCP_ALLOWED_ORIGINS: `${LAN_HOSTNAME},chrome-extension://*`,
         })
 
         assert.equal(config.http.host, LAN_HOST)
         assert.deepEqual(config.http.allowedHosts, [LAN_HOST, LAN_HOSTNAME])
-        assert.deepEqual(config.http.allowedOrigins, [`http://${LAN_HOST}:3000`])
+        assert.equal(config.http.hostGuardOptOut, false)
+        assert.deepEqual(config.http.allowedOrigins, [LAN_HOSTNAME, 'chrome-extension://*'])
     })
 
     it('rejects a port outside the valid range', () => {

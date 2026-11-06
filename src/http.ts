@@ -1,7 +1,7 @@
 import { once } from 'node:events'
 import type { Server as NodeHttpServer } from 'node:http'
 import { performance } from 'node:perf_hooks'
-import { createMcpExpressApp, requireBearerAuth } from '@modelcontextprotocol/express'
+import { requireBearerAuth } from '@modelcontextprotocol/express'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import {
     createMcpHandler,
@@ -12,7 +12,9 @@ import {
 import express, { type Express, type Request, type RequestHandler } from 'express'
 import { createStaticTokenVerifier } from './auth.ts'
 import { isLoopbackHost, type HttpConfig, type ServerConfig } from './config.ts'
-import { createLogger, describeBlock, diagnoseRequest, type GuardLimits, type Logger } from './logging.ts'
+import { ENV_VARS, LIST_WILDCARD } from './constants.ts'
+import { createHostGuard, createOriginGuard, describeBlock, type GuardLimits } from './guards.ts'
+import { createLogger, diagnoseRequest, type Logger } from './logging.ts'
 import { createServer, type CreateServerOptions } from './server.ts'
 
 export type HttpServerOptions = CreateServerOptions & {
@@ -59,13 +61,19 @@ export async function startHttpServer(config: ServerConfig, options: HttpServerO
 }
 
 function buildApp(config: ServerConfig, handler: McpHttpHandler, limits: GuardLimits, logger: Logger): Express {
-    // The SDK app owns JSON parsing plus the `Host`/`Origin` guards. It is mounted
-    // inside our app so a request a guard rejects is still logged.
-    const guarded = createMcpExpressApp({
-        host: config.http.host,
-        allowedHosts: limits.host,
-        allowedOrigins: limits.origin,
-    })
+    const app = express()
+    // Registered first so requests rejected by a guard or by the auth check, which
+    // answer without ever reaching a tool, still produce a log line.
+    app.use(createRequestLogger(logger, limits, config.http.path, config.http.authToken !== undefined))
+
+    // DNS rebinding protection. The `Host` guard is best-effort: it is installed
+    // only when an allowlist exists, because the MCP specification does not
+    // require it. The `Origin` guard is required, so it is always installed.
+    if (limits.host !== undefined) app.use(createHostGuard(limits.host))
+    if (limits.origin !== undefined) app.use(createOriginGuard(limits.origin))
+
+    app.use(express.json())
+
     const nodeHandler = toNodeHandler(handler)
     // `express.json()` has already consumed the stream, so hand the parsed body
     // over instead of letting the adapter try to read it again.
@@ -77,32 +85,25 @@ function buildApp(config: ServerConfig, handler: McpHttpHandler, limits: GuardLi
     // non-loopback bind unless a token is present, so this branch cannot expose
     // an unprotected public endpoint.
     if (config.http.authToken === undefined) {
-        guarded.all(config.http.path, respond)
+        app.all(config.http.path, respond)
     } else {
         const auth = requireBearerAuth({ verifier: createStaticTokenVerifier(config.http.authToken) })
-        guarded.all(config.http.path, auth, respond)
+        app.all(config.http.path, auth, respond)
     }
 
-    const app = express()
-    // Registered first so requests rejected by a guard or by the auth check, which
-    // answer without ever reaching a tool, still produce a log line.
-    app.use(createRequestLogger(logger, limits, config.http.path, config.http.authToken !== undefined))
-    app.use(guarded)
     return app
 }
 
 /**
- * Mirrors the SDK's own defaults: a loopback bind with no explicit list checks
- * against `localhost`, `127.0.0.1` and `[::1]`. Resolving them here means the
- * list that is enforced and the list named in a rejection are the same one.
+ * Resolves the two allowlists the guards enforce.
+ *
+ * The origin list falls back to the loopback defaults on every bind, which is
+ * what keeps the required `Origin` check working without configuration. The host
+ * list has no fallback off loopback: an unset value means "no host guard".
  */
 function resolveGuardLimits(http: HttpConfig): GuardLimits {
-    if (!isLoopbackHost(http.host)) {
-        return { host: http.allowedHosts, origin: http.allowedOrigins }
-    }
-
     return {
-        host: http.allowedHosts ?? localhostAllowedHostnames(),
+        host: http.allowedHosts ?? (isLoopbackHost(http.host) ? localhostAllowedHostnames() : undefined),
         origin: http.allowedOrigins ?? localhostAllowedOrigins(),
     }
 }
@@ -112,9 +113,17 @@ function describeGuards(config: ServerConfig, limits: GuardLimits): string {
     return [
         `logging ${config.logLevel}`,
         `auth ${auth}`,
-        `host check ${describeLimit(limits.host)}`,
+        `host check ${describeHostLimit(limits.host, config.http.hostGuardOptOut)}`,
         `origin check ${describeLimit(limits.origin)}`,
     ].join('; ')
+}
+
+/** An absent host guard is reported as a decision, so it is never a silent hole. */
+function describeHostLimit(limit: string[] | undefined, optedOut: boolean): string {
+    if (limit !== undefined) return limit.join(',')
+
+    const reason = optedOut ? `${ENV_VARS.mcpAllowedHosts}=${LIST_WILDCARD}` : `${ENV_VARS.mcpAllowedHosts} not set`
+    return `off (${reason})`
 }
 
 function describeLimit(limit: string[] | undefined): string {

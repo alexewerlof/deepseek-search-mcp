@@ -41,8 +41,10 @@ them on every push, in that order, before it builds an image.
    rules to make a build pass; fix the code.
 6. **No I/O at import time.** `createServer()` and the HTTP app are factories.
    Configuration loading and `listen()` happen in `src/main.ts` only.
-7. **Fail closed on exposure.** A non-loopback bind without `MCP_AUTH_TOKEN` and
-   `MCP_ALLOWED_HOSTS` must refuse to start.
+7. **Fail closed on exposure, and always validate `Origin`.** A non-loopback bind
+   without `MCP_AUTH_TOKEN` must refuse to start. The `Origin` guard is installed
+   on every bind because the MCP specification requires it; `MCP_ALLOWED_HOSTS`
+   is optional, and an unset list installs no `Host` guard.
 8. **No personal data in tracked files.** Examples use the documentation ranges
    reserved by RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and
    the RFC 2606 `.example` TLD. Never put a real hostname, LAN address, machine
@@ -113,9 +115,9 @@ node --env-file=prod.env src/main.ts
 | `MCP_HTTP_HOST` | `127.0.0.1` | Non-loopback requires the next two |
 | `MCP_HTTP_PORT` | `8765` | `0` picks a free port |
 | `MCP_HTTP_PATH` | `/mcp` | |
-| `MCP_AUTH_TOKEN` | — | ≥32 characters |
-| `MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames/IPs |
-| `MCP_ALLOWED_ORIGINS` | — | Only for browser clients; a Chrome extension sends `chrome-extension://<id>` |
+| `MCP_AUTH_TOKEN` | — | ≥32 characters; required off loopback |
+| `MCP_ALLOWED_HOSTS` | — | Optional `Host` names, comma separated and port agnostic; unset means no host guard, `*` says that on purpose |
+| `MCP_ALLOWED_ORIGINS` | `localhost,127.0.0.1,[::1]` | Always enforced. Bare hostnames, or a non-http `<scheme>://*`; an entry that could never match refuses to start |
 | `MCP_LOG_LEVEL` | `info` | `off`, `info` or `debug`; one line per request on stderr |
 
 ## Keeping these files in sync

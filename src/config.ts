@@ -7,6 +7,7 @@ import {
     LOG_LEVELS,
     LOOPBACK_HOSTS,
     MIN_AUTH_TOKEN_LENGTH,
+    LIST_WILDCARD,
     type LogLevel,
 } from './constants.ts'
 import {
@@ -40,6 +41,8 @@ export type HttpConfig = {
     path: string
     authToken: string | undefined
     allowedHosts: string[] | undefined
+    /** `MCP_ALLOWED_HOSTS=*`: the `Host` guard is off on purpose, not forgotten. */
+    hostGuardOptOut: boolean
     allowedOrigins: string[] | undefined
 }
 
@@ -68,6 +71,15 @@ const MAX_RETRIES = 5
 const MIN_TIMEOUT_MS = 1_000
 const MAX_TIMEOUT_MS = 120_000
 
+/** `<scheme>://*`, the only wildcard form the SDK's origin guard honours. */
+const SCHEME_WILDCARD = /^([a-z][a-z0-9+.-]*):\/\/\*$/i
+
+/** What a browser sends for an opaque context; no allowlist entry can match it. */
+const OPAQUE_ORIGIN = 'null'
+
+/** `server.example:8765` — a hostname entry never includes the port. */
+const HOST_WITH_PORT = /^[^:\s/[\]]*:\d+$/
+
 /**
  * Builds the server configuration from environment variables. The `.env` file is
  * not read here: `npm start` passes `--env-file-if-exists=.env`, and Node loads it
@@ -87,8 +99,10 @@ export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
     const host = read(ENV_VARS.mcpHttpHost) ?? DEFAULT_HTTP_HOST
     const authToken = read(ENV_VARS.mcpAuthToken)
     validateAuthToken(authToken)
-    const allowedHosts = readCsv(read(ENV_VARS.mcpAllowedHosts))
-    validateNetworkExposure(host, authToken, allowedHosts)
+    validateNetworkExposure(host, authToken)
+    const hostList = readHostList(read(ENV_VARS.mcpAllowedHosts))
+    const allowedOrigins = readCsv(read(ENV_VARS.mcpAllowedOrigins))
+    validateOrigins(allowedOrigins)
 
     return {
         logLevel: readLogLevel(read),
@@ -129,8 +143,9 @@ export function loadConfig(options: LoadConfigOptions = {}): ServerConfig {
             port: readInteger(read, ENV_VARS.mcpHttpPort, DEFAULT_HTTP_PORT, { min: MIN_PORT, max: MAX_PORT }),
             path: read(ENV_VARS.mcpHttpPath) ?? DEFAULT_HTTP_PATH,
             authToken,
-            allowedHosts,
-            allowedOrigins: readCsv(read(ENV_VARS.mcpAllowedOrigins)),
+            allowedHosts: hostList.hosts,
+            hostGuardOptOut: hostList.optedOut,
+            allowedOrigins,
         },
     }
 }
@@ -189,6 +204,72 @@ function readCsv(raw: string | undefined): string[] | undefined {
     return entries.length > 0 ? entries : undefined
 }
 
+/**
+ * `MCP_ALLOWED_HOSTS=*` is an acknowledged opt-out rather than a pattern: the
+ * SDK compares hostnames literally, so `*` would otherwise match nothing.
+ */
+function readHostList(raw: string | undefined): { hosts: string[] | undefined; optedOut: boolean } {
+    const entries = readCsv(raw)
+    if (entries === undefined) return { hosts: undefined, optedOut: false }
+    if (entries.includes(LIST_WILDCARD)) return { hosts: undefined, optedOut: true }
+
+    return { hosts: entries, optedOut: false }
+}
+
+/**
+ * The origin guard is always installed, so an entry that can never match would
+ * silently reject every browser client -- the server would start looking healthy
+ * while being unusable. Reject those entries at startup instead.
+ *
+ * The SDK compares two things: a bare hostname, or `<scheme>://*` for a scheme
+ * other than http/https. Anything else is dead weight: a full origin including
+ * its scheme, a hostname with a port, the opaque `null`, or a bare `*`.
+ */
+function validateOrigins(origins: string[] | undefined): void {
+    if (origins === undefined) return
+
+    for (const entry of origins) {
+        const reason = describeDeadOriginEntry(entry)
+        if (reason === undefined) continue
+
+        throw new ConfigError(
+            `${ENV_VARS.mcpAllowedOrigins} entry "${entry}" can never match a request: ${reason}. List bare hostnames (server.example, 127.0.0.1, [::1]) or a non-http scheme wildcard such as chrome-extension://* .`,
+        )
+    }
+}
+
+/** Why an allowlist entry could never match, or `undefined` when it can. */
+function describeDeadOriginEntry(entry: string): string | undefined {
+    if (entry === LIST_WILDCARD) return 'a bare wildcard matches nothing'
+    if (entry === OPAQUE_ORIGIN) return 'an opaque origin has no hostname to match'
+
+    const schemeWildcard = SCHEME_WILDCARD.exec(entry)
+    if (schemeWildcard !== null) {
+        const scheme = schemeWildcard[1].toLowerCase()
+        return scheme === 'http' || scheme === 'https'
+            ? 'only non-http schemes are honoured, so this one matches no origin'
+            : undefined
+    }
+
+    if (entry.includes('://')) {
+        return `entries are hostnames, not origins; use ${bareHostname(entry)}`
+    }
+
+    if (HOST_WITH_PORT.test(entry)) return 'matching ignores the port, so a hostname entry never includes one'
+
+    return undefined
+}
+
+/** The hostname inside an origin, for the message that corrects it. */
+function bareHostname(origin: string): string {
+    try {
+        const hostname = new URL(origin).hostname
+        return hostname === '' ? 'the hostname without scheme or port' : hostname
+    } catch {
+        return 'the hostname without scheme or port'
+    }
+}
+
 function validateAuthToken(authToken: string | undefined): void {
     if (authToken === undefined) return
     if (authToken.length < MIN_AUTH_TOKEN_LENGTH) {
@@ -199,28 +280,16 @@ function validateAuthToken(authToken: string | undefined): void {
 }
 
 /**
- * A non-loopback bind exposes the endpoint to the network. Refuse to start
- * without the two protections the SDK expects the operator to supply: a bearer
- * token, and an explicit list of hostnames (binding away from loopback turns
- * off the adapter's built-in DNS rebinding defaults).
+ * A bind away from loopback exposes the endpoint to the network, so refuse to
+ * start without the bearer token the MCP specification expects an operator to
+ * supply. The `Host` allowlist is not part of that requirement: it stays
+ * optional, and an unset list installs no `Host` guard.
  */
-function validateNetworkExposure(
-    host: string,
-    authToken: string | undefined,
-    allowedHosts: string[] | undefined,
-): void {
+function validateNetworkExposure(host: string, authToken: string | undefined): void {
     if (isLoopbackHost(host)) return
-
-    const problems: string[] = []
-    if (authToken === undefined) {
-        problems.push(`${ENV_VARS.mcpAuthToken} (generate one with: openssl rand -hex 32)`)
-    }
-    if (allowedHosts === undefined) {
-        problems.push(`${ENV_VARS.mcpAllowedHosts} (the hostnames clients use, for example 198.51.100.10)`)
-    }
-    if (problems.length === 0) return
+    if (authToken !== undefined) return
 
     throw new ConfigError(
-        `Binding to ${host} exposes this server to the network. Set ${problems.join(' and ')} before starting.`,
+        `Binding to ${host} exposes this server to the network. Set ${ENV_VARS.mcpAuthToken} (generate one with: openssl rand -hex 32) before starting.`,
     )
 }

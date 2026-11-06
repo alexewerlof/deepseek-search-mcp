@@ -33,22 +33,29 @@ The server needs **two** credentials, and they are deliberately different:
 | Credential | Where it lives | What it is for |
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | On the MCP server only | Pays for DeepSeek Search and Fetch calls |
-| `MCP_AUTH_TOKEN` | On the server **and** in LM Studio's `mcp.json` | Proves LM Studio is allowed to call this server |
+| `MCP_AUTH_TOKEN` | Shared between the server **and** the client | Proves the client is allowed to call this server |
 
-The DeepSeek key never travels over MCP. If someone reads LM Studio's config, they
+The credentials live in an `.env` file that's not checked in to the repo.
+Initialize it by copying the example:
+
+```bash
+cp .env.example .env
+```
+
+Then set your [Deepseek API key](https://platform.deepseek.com/api_keys) in `DEEPSEEK_API_KEY`. I recommend creating a unique and dedicated API key for this MCP so you can invalidate it without breaking other integrations to Deepseek (e.g. your IDE or AI agent).
+
+The DeepSeek key never travels over MCP. If someone reads the client's config, they
 get a token that can call these two read-only tools — not a key that can spend
 your account balance.
 
 ```bash
-cp .env.example .env
-# then edit .env
-openssl rand -hex 32        # paste the result as MCP_AUTH_TOKEN
+# Generate a random value for MCP_AUTH_TOKEN
+openssl rand -hex 32
 ```
 
-`.env` is gitignored. `npm start` loads it through Node's own
-`--env-file-if-exists=.env`, so the file is optional: an MCP host or container that
-passes environment variables needs no file at all. Node does not overwrite a
-variable that is already set, so a one-off override is easy:
+Paste the result as `MCP_AUTH_TOKEN` in the .env
+
+You can also provide the environment variables when starting the server but be warned that the token gets logged in your terminal history:
 
 ```bash
 DEEPSEEK_API_KEY=sk-... npm start
@@ -61,35 +68,81 @@ you invoke `npm start`. To use a different file, call node yourself:
 node --env-file=prod.env src/main.ts
 ```
 
-Two details of Node's parser differ from most dotenv libraries: a `#` starts a
-comment anywhere on the line, so quote a value that contains one
-(`MCP_AUTH_TOKEN="ab#cd"`), and values are not expanded, so `$HOME` stays literal.
+Two details of Node's parser differ from most dotenv libraries:
+1. A `#` starts a comment anywhere on the line, so quote a value that contains one
+(`MCP_AUTH_TOKEN="ab#cd"`)
+2. Values are not expanded, so `$HOME` stays literal.
+
+### Port
+
+By default, the server listens on port `8765`.
+You can change that in the `.env` file:
+
+```ini
+MCP_HTTP_PORT=8888 #Listen on port 8888
+```
 
 ### Running across the network
 
 A loopback-only setup needs nothing else. To accept connections from another
 machine, set:
 
-```dotenv
+```ini
 MCP_HTTP_HOST=0.0.0.0
-MCP_HTTP_PORT=8765
 MCP_AUTH_TOKEN=<32+ random characters>
-MCP_ALLOWED_HOSTS=198.51.100.10,server.example
 ```
 
-`MCP_ALLOWED_HOSTS` is not optional: binding off loopback disables the built-in
-`Host` header protection, so the server refuses to start without an explicit list.
-This is what stops DNS rebinding, where a malicious web page resolves its own
-domain to your server's address.
+Those are the only requirements. `MCP_AUTH_TOKEN` is not optional off loopback:
+the server refuses to start without it rather than expose an unauthenticated
+endpoint, and it is the control that actually gates a reachable port.
 
-Browser clients — a Chrome extension, for example — also send an `Origin` header.
-On a loopback bind the server accepts only `localhost`, `127.0.0.1` and `[::1]`
-unless `MCP_ALLOWED_ORIGINS` says otherwise, and an extension's origin is
-`chrome-extension://<extension-id>`, so list either that id or
-`chrome-extension://*` for every extension of that scheme. Setting the variable
-replaces the loopback defaults: keep `localhost,127.0.0.1,[::1]` in the list if a
-local web page also calls the server. An `Origin` that is not listed is a `403`,
-and the log line says `blocked=origin`.
+### Host and Origin checks
+
+The MCP specification requires servers to validate the `Origin` header; it says
+nothing about `Host`. This server follows that split:
+
+- **The `Origin` guard is always on.** With no configuration it accepts only
+  `localhost`, `127.0.0.1` and `[::1]`, which is enough for non-browser clients —
+  they send no `Origin` header at all, so the check passes. A browser client is
+  rejected until its origin is listed. An Chrome extension's origin is
+  `chrome-extension://<extension-id>`, so list either that id or
+  `chrome-extension://*` for every extension of that scheme. Setting
+  `MCP_ALLOWED_ORIGINS` replaces the loopback defaults: keep
+  `localhost,127.0.0.1,[::1]` in the list if a local page also calls the server.
+- **The `Host` guard is optional.** Set `MCP_ALLOWED_HOSTS` to the names clients
+  put in the `Host` header — the address or hostname they dial, port-agnostic —
+  to add DNS-rebinding protection on top of the token. Leaving it unset
+  installs no `Host` guard, and the startup line says so. `MCP_ALLOWED_HOSTS=*`
+  opts out explicitly, for the case where the unset form looks like an oversight.
+  A missing entry is a `403` whose body names `MCP_ALLOWED_HOSTS`.
+
+Entries are matched against the origin's **hostname**, so a full origin with a
+scheme and port would never match — `https://server.example:3000` must be written
+`server.example`. The only wildcard form is `<scheme>://*`, and only for schemes
+other than `http` and `https`. The server checks this at startup and refuses to
+start on an entry that could never match (`*`, `https://*`, a full URL, `null`),
+because a running server that rejects every browser client looks healthy while
+being unusable.
+
+Every rejection is a `403` with a JSON-RPC error body naming the failed check,
+the setting that controls it and the value the client sent:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": null,
+  "error": {
+    "code": -32000,
+    "message": "Invalid Origin: abcdefghijklmnop",
+    "data": {
+      "check": "origin",
+      "setting": "MCP_ALLOWED_ORIGINS",
+      "value": "chrome-extension://abcdefghijklmnop",
+      "hint": "add abcdefghijklmnop to MCP_ALLOWED_ORIGINS, or chrome-extension://* for every origin of that scheme"
+    }
+  }
+}
+```
 
 Every address in this README comes from a range reserved for documentation —
 `198.51.100.0/24` ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)) and the
@@ -200,9 +253,8 @@ the local build; if you pulled the published image instead, use
 `ghcr.io/alexewerlof/deepseek-search-mcp:latest`.
 
 The image binds `0.0.0.0` because a container's loopback is not reachable
-through a published port — and that non-loopback bind is exactly what makes
-`MCP_AUTH_TOKEN` and `MCP_ALLOWED_HOSTS` mandatory. The server refuses to start
-without them rather than expose an open endpoint:
+through a published port, which is why `MCP_AUTH_TOKEN` is mandatory — the
+server refuses to start without it rather than expose an open endpoint:
 
 ```bash
 openssl rand -hex 32        # generate once; the same value goes in the client's config
@@ -211,7 +263,7 @@ podman run -d --name deepseek-search-mcp \
   -p 8765:8765 \
   -e DEEPSEEK_API_KEY=sk-... \
   -e MCP_AUTH_TOKEN=<paste-the-generated-token> \
-  -e MCP_ALLOWED_HOSTS=198.51.100.10,localhost \
+  -e MCP_ALLOWED_ORIGINS=chrome-extension://* \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
   deepseek-search-mcp
 ```
@@ -219,10 +271,11 @@ podman run -d --name deepseek-search-mcp \
 The token is a credential, not something to regenerate per start: the container
 and the MCP host must agree on it.
 
-`MCP_ALLOWED_HOSTS` must list every name a client will put in the `Host` header:
-the address or hostname the MCP host dials from the network, plus `localhost` if
-you also smoke-test from the server machine. A missing entry is a `403`, never a
-silent fallback.
+`MCP_ALLOWED_ORIGINS` is only needed for browser clients. Add
+`MCP_ALLOWED_HOSTS=198.51.100.10,localhost` to also reject requests whose `Host`
+header is not one of those names; without it the server logs `host check off` at
+startup and relies on the token. See [Host and Origin
+checks](#host-and-origin-checks).
 
 `--read-only` is safe because the process writes only to stderr; nothing touches
 the filesystem after startup.
@@ -238,7 +291,6 @@ printf 'DEEPSEEK_API_KEY=sk-...\n' > .env.container
 podman run -d --name deepseek-search-mcp \
   -p 8765:8765 --env-file .env.container \
   -e MCP_AUTH_TOKEN=<paste-the-generated-token> \
-  -e MCP_ALLOWED_HOSTS=198.51.100.10,localhost \
   deepseek-search-mcp
 ```
 
@@ -281,7 +333,7 @@ systemctl --user enable --now podman-auto-update.timer
 There is no `podman run` in this flow: `daemon-reload` reads the Quadlet file and
 generates the unit. A missing `~/.config/deepseek-search-mcp/env` fails the
 start, which is intended — the server refuses to bind off loopback without a
-token and a host allowlist.
+bearer token.
 
 ```bash
 systemctl --user status deepseek-search-mcp
@@ -447,12 +499,13 @@ and API facts live in [.agents/skills](.agents/skills).
 | Symptom | Likely cause |
 | --- | --- |
 | `deepseek-search-mcp cannot start: Missing DEEPSEEK_API_KEY` | No key in the environment, and no `.env` for `npm start` to load |
-| `Binding to 0.0.0.0 exposes this server to the network` | Non-loopback bind without `MCP_AUTH_TOKEN` and `MCP_ALLOWED_HOSTS`; the container sets `0.0.0.0` by default |
+| `Binding to 0.0.0.0 exposes this server to the network` | Non-loopback bind without `MCP_AUTH_TOKEN`; the container sets `0.0.0.0` by default |
 | Container exits immediately | Same as above: read `podman logs`, it prints the missing variable |
 | `MCP_AUTH_TOKEN must be at least 32 characters` | Token too short; `openssl rand -hex 32` |
 | `401` from curl, LM Studio or Jan | Token mismatch, or the client sends no `Authorization` header |
-| `403` with `blocked=host` in the log | `MCP_ALLOWED_HOSTS` does not contain the hostname the client used |
-| Extension calls fail with `403` while curl succeeds | The extension's `Origin` (`chrome-extension://<id>`) is not in `MCP_ALLOWED_ORIGINS` |
+| `403` with `data.check=host` in the body | `MCP_ALLOWED_HOSTS` is set and does not contain the hostname the client used |
+| `403` with `data.check=origin` in the body | The browser origin is not in `MCP_ALLOWED_ORIGINS`; `chrome-extension://*` covers every extension |
+| Extension calls fail with `403` while curl succeeds | The extension's `Origin` (`chrome-extension://<id>`) is not covered by `MCP_ALLOWED_ORIGINS` |
 | No log line for a client call | The request never arrived: check host permissions, firewall, port, and the `/mcp` path |
 | Jan shows the server as connected but offers no tools | URL missing `/mcp`, or the selected model has no tool support |
 | Tools listed but every call fails with 402 | DeepSeek balance is empty |
@@ -462,7 +515,9 @@ and API facts live in [.agents/skills](.agents/skills).
 
 ## Security
 
-- Loopback bind by default; a public bind requires a token and a host allowlist.
+- Loopback bind by default; a public bind requires a bearer token.
+- `Origin` validation is always installed, as the MCP specification requires.
+  `Host` validation is an optional extra, enabled with `MCP_ALLOWED_HOSTS`.
 - Tokens are compared in constant time.
 - Plain HTTP exposes the bearer token to anyone on the path. Put Caddy or nginx in
   front for TLS, or use WireGuard, Tailscale or an SSH tunnel. A

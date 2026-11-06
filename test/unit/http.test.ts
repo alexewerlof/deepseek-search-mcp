@@ -18,7 +18,7 @@ const stubClient: DeepSeekSearchAndFetch = {
     fetchPage: async () => ({ title: '', content: '' }),
 }
 
-function createConfig(): ServerConfig {
+function createConfig(http: Partial<ServerConfig['http']> = {}): ServerConfig {
     return {
         logLevel: 'info',
         deepseek: {
@@ -35,7 +35,9 @@ function createConfig(): ServerConfig {
             path: '/mcp',
             authToken: TOKEN,
             allowedHosts: undefined,
+            hostGuardOptOut: false,
             allowedOrigins: undefined,
+            ...http,
         },
     }
 }
@@ -102,8 +104,18 @@ async function readRpcPayload(response: Response): Promise<unknown> {
     return JSON.parse(last.slice('data:'.length).trim())
 }
 
+/** The server binds `0.0.0.0` in some tests; dial it through loopback instead. */
+function toLoopback(url: string): string {
+    return url.replace('0.0.0.0', '127.0.0.1')
+}
+
 /** `fetch` strips the `Host` header, so DNS rebinding checks need a raw request. */
 function postWithHeaders(url: string, headers: Record<string, string>): Promise<number> {
+    return postForResponse(url, headers).then((response) => response.status)
+}
+
+/** The same raw request, keeping the body so a rejection can be inspected. */
+function postForResponse(url: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
         const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
         const outgoing = request(
@@ -119,8 +131,11 @@ function postWithHeaders(url: string, headers: Record<string, string>): Promise<
                 },
             },
             (incoming) => {
-                incoming.resume()
-                incoming.on('end', () => resolve(incoming.statusCode ?? 0))
+                const chunks: Buffer[] = []
+                incoming.on('data', (chunk: Buffer) => chunks.push(chunk))
+                incoming.on('end', () =>
+                    resolve({ status: incoming.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }),
+                )
             },
         )
 
@@ -168,6 +183,63 @@ describe('HTTP endpoint', () => {
         const status = await postWithHeaders(server.url, { host: 'attacker.example' })
 
         assert.equal(status, 403)
+    })
+})
+
+describe('guard policy', () => {
+    it('starts on a non-loopback bind without an explicit host list', async (t) => {
+        const server = await startTestServer(t, { config: createConfig({ host: '0.0.0.0' }) })
+
+        const response = await fetch(toLoopback(server.url), toolsListRequest({ authorization: `Bearer ${TOKEN}` }))
+
+        assert.equal(response.status, 200)
+        await response.text()
+    })
+
+    it('accepts any Host when no host list is configured', async (t) => {
+        const server = await startTestServer(t, { config: createConfig({ host: '0.0.0.0' }) })
+
+        const status = await postWithHeaders(toLoopback(server.url), { host: 'anything.example' })
+
+        assert.equal(status, 200)
+    })
+
+    it('still checks Origin on a non-loopback bind with no configuration', async (t) => {
+        const server = await startTestServer(t, { config: createConfig({ host: '0.0.0.0' }) })
+
+        const { status, body } = await postForResponse(toLoopback(server.url), {
+            origin: 'chrome-extension://abcdefghijklmnop',
+        })
+
+        assert.equal(status, 403)
+        const payload = JSON.parse(body)
+        assert.equal(payload.error.data.check, 'origin')
+        assert.equal(payload.error.data.setting, 'MCP_ALLOWED_ORIGINS')
+        assert.match(payload.error.data.hint, /chrome-extension:\/\/\*/)
+    })
+
+    it('names the host check in the rejection body', async (t) => {
+        const server = await startTestServer(t)
+
+        const { status, body } = await postForResponse(server.url, { host: 'attacker.example' })
+
+        assert.equal(status, 403)
+        const payload = JSON.parse(body)
+        assert.equal(payload.error.data.check, 'host')
+        assert.equal(payload.error.data.setting, 'MCP_ALLOWED_HOSTS')
+        assert.match(payload.error.data.hint, /attacker\.example/)
+    })
+
+    it('accepts an extension origin covered by a scheme wildcard', async (t) => {
+        const server = await startTestServer(t, {
+            config: createConfig({ allowedOrigins: ['chrome-extension://*'] }),
+        })
+
+        const { status, body } = await postForResponse(server.url, {
+            origin: 'chrome-extension://abcdefghijklmnop',
+        })
+
+        assert.equal(status, 200, body)
     })
 })
 

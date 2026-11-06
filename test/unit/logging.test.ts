@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { createLogger, describeBlock, diagnoseRequest } from '../../src/logging.ts'
+import { describeBlock } from '../../src/guards.ts'
+import { createLogger, diagnoseRequest } from '../../src/logging.ts'
 
 describe('createLogger', () => {
     it('prefixes every line with the server name', () => {
@@ -180,11 +181,37 @@ describe('describeBlock', () => {
         assert.match(result.hint ?? '', /chrome-extension:\/\/\*/)
     })
 
-    it('offers generic advice for an origin that cannot be parsed', () => {
+    it('explains that an opaque origin can never be allowlisted', () => {
         const result = describeBlock({ status: 403, host: 'localhost:8765', origin: 'null', limits: LOCAL_ONLY })
 
         assert.equal(result.blocked, 'origin')
-        assert.match(result.hint ?? '', /<scheme>:\/\/\*/)
+        assert.match(result.hint ?? '', /cannot be allowlisted/)
+        assert.match(result.hint ?? '', /MCP_ALLOWED_ORIGINS/)
+    })
+
+    it('does not suggest a scheme wildcard that would match nothing', () => {
+        const result = describeBlock({
+            status: 403,
+            host: 'localhost:8765',
+            origin: 'https://app.example',
+            limits: LOCAL_ONLY,
+        })
+
+        assert.equal(result.blocked, 'origin')
+        assert.match(result.hint ?? '', /add app\.example/)
+        assert.ok(!(result.hint ?? '').includes('https://*'))
+    })
+
+    it('names the wildcard when the host guard is disabled on purpose', () => {
+        const result = describeBlock({
+            status: 403,
+            host: 'attacker.example:8765',
+            origin: undefined,
+            limits: { host: ['localhost'], origin: ['localhost'] },
+        })
+
+        assert.equal(result.blocked, 'host')
+        assert.match(result.hint ?? '', /MCP_ALLOWED_HOSTS=\*/)
     })
 
     it('passes an origin covered by a scheme wildcard', () => {

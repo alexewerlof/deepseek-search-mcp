@@ -23,8 +23,9 @@ USER node
 
 # A container's loopback is unreachable through a published port, so bind all
 # interfaces by default. That makes the bind non-loopback, which means the server
-# refuses to start without MCP_AUTH_TOKEN and MCP_ALLOWED_HOSTS. Override with
+# refuses to start without MCP_AUTH_TOKEN. Override with
 # -e MCP_HTTP_HOST=127.0.0.1 when only the host machine needs to reach it.
+# MCP_ALLOWED_HOSTS is optional; setting it adds a `Host` check on top of the token.
 ENV MCP_HTTP_HOST=0.0.0.0
 EXPOSE 8765
 

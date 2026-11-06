@@ -12,8 +12,8 @@
 #   systemctl --user enable --now podman-auto-update.timer
 #
 # The environment file must exist before the first start: the server refuses to
-# bind off loopback without a token and a host allowlist, so a missing file is a
-# failed start rather than an open endpoint.
+# bind off loopback without a bearer token, so a missing file is a failed start
+# rather than an open endpoint.
 [Unit]
 Description=DeepSeek Search MCP (Streamable HTTP)
 Wants=network-online.target

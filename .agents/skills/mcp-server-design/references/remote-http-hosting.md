@@ -50,8 +50,9 @@ from the same factory by default (`legacy: 'stateless'` / `'serve'`). Do not set
 
 ## Network checklist
 
-1. Bind to the machine's LAN address (`0.0.0.0` or the specific IP) and set
-   `MCP_ALLOWED_HOSTS` to the names or IPs clients use.
+1. Bind to the machine's LAN address (`0.0.0.0` or the specific IP) and set a
+   bearer token. Adding `MCP_ALLOWED_HOSTS` with the names or IPs clients use
+   also rejects a rebound `Host` header.
 2. Open the port in the host firewall, scoped to the LAN subnet if possible.
 3. Terminate TLS (Caddy or nginx) or use a tunnel; a bearer over plain HTTP is
    readable by anyone on the path.
@@ -67,8 +68,8 @@ from the same factory by default (`legacy: 'stateless'` / `'serve'`). Do not set
 | --- | --- |
 | Tools missing from the list | Server not reachable, or `url` points at the root instead of `/mcp` |
 | `401` in the LM Studio logs | Token mismatch, or a 2025-era client sending no `Authorization` |
-| `403`, log says `blocked=host` | `MCP_ALLOWED_HOSTS` does not contain the hostname the client used |
-| `403`, log says `blocked=origin` | A browser or extension client: its `Origin` is not in `MCP_ALLOWED_ORIGINS`. A Chrome extension sends `chrome-extension://<id>`; list the id or `chrome-extension://*`. Setting the variable replaces the loopback defaults |
+| `403`, body says `data.check=host` | `MCP_ALLOWED_HOSTS` is set and does not contain the hostname the client used |
+| `403`, body says `data.check=origin` | A browser or extension client: its `Origin` is not in `MCP_ALLOWED_ORIGINS`. A Chrome extension sends `chrome-extension://<id>`; list the id or `chrome-extension://*`. Setting the variable replaces the loopback defaults |
 | No log line for a client call | The request never reached the server: host permissions, firewall, port or path |
 | Calls succeed from curl but not from LM Studio | Client sends no `Origin` header, or the endpoint expects a path prefix |
 | Context overflows after one call | Tool output is too large; lower result counts and page caps |

@@ -50,9 +50,10 @@ expensive after a host has cached the tool list.
 ## Transport and exposure
 
 - [ ] Loopback bind for same-machine use.
-- [ ] Non-loopback bind requires a bearer token and an explicit host allowlist.
-- [ ] `Host` header validation is active (DNS rebinding).
-- [ ] `Origin` validation is active when browser clients are possible.
+- [ ] Non-loopback bind requires a bearer token.
+- [ ] `Host` header validation is active when a host allowlist is configured.
+- [ ] `Origin` validation is active on every bind (an MCP MUST), with a
+      machine-readable 403 that names the failed check.
 - [ ] TLS or a private tunnel protects a network-exposed endpoint.
 - [ ] Tokens are compared in constant time.
 

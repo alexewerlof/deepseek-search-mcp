@@ -1,4 +1,3 @@
-import { validateHostHeader, validateOriginHeader } from '@modelcontextprotocol/server'
 import { DEFAULT_LOG_LEVEL, ENV_VARS, LOG_LEVELS, SERVER_NAME, type LogLevel } from './constants.ts'
 
 /** Writes one already-formatted line. Defaults to stderr; tests inject a collector. */
@@ -39,7 +38,6 @@ function write(level: LogLevel, required: Exclude<LogLevel, 'off'>, sink: LogSin
 
 const FIRST_ERROR_STATUS = 400
 const UNAUTHORIZED_STATUS = 401
-const FORBIDDEN_STATUS = 403
 const BEARER_TOKEN = /^Bearer\s+\S+/i
 
 /** How the bearer token check ended, as far as the server can tell. */
@@ -123,85 +121,4 @@ function samePath(path: string, endpointPath: string): boolean {
 
 function trimTrailingSlashes(path: string): string {
     return path.replace(/\/+$/, '') || '/'
-}
-
-/** Which SDK guard ended the request. `undefined` means the 403 came from elsewhere. */
-export type BlockedGuard = 'host' | 'origin'
-
-/**
- * The allowlists the SDK guards enforce. `undefined` means that guard was not
- * installed, so nothing is checked and nothing can be blamed on it.
- */
-export type GuardLimits = {
-    host: string[] | undefined
-    origin: string[] | undefined
-}
-
-export type BlockDiagnosis = Diagnosis & { blocked: BlockedGuard | undefined }
-
-/**
- * Attributes a 403 to the guard that produced it by re-running the SDK's own
- * validators. Nothing is duplicated here: when this says the `Host` header was
- * rejected, that is the same predicate that wrote the response.
- */
-export function describeBlock(options: {
-    status: number
-    host: string | undefined
-    origin: string | undefined
-    limits: GuardLimits
-}): BlockDiagnosis {
-    const { status, host, origin, limits } = options
-    if (status !== FORBIDDEN_STATUS) return { blocked: undefined }
-
-    if (limits.host !== undefined) {
-        const result = validateHostHeader(host, limits.host)
-        if (!result.ok) {
-            return { blocked: 'host', reason: result.message, hint: describeHostHint(host, limits.host) }
-        }
-    }
-
-    if (limits.origin !== undefined) {
-        const result = validateOriginHeader(origin, limits.origin)
-        if (!result.ok) {
-            return { blocked: 'origin', reason: result.message, hint: describeOriginHint(origin) }
-        }
-    }
-
-    return { blocked: undefined }
-}
-
-function describeHostHint(host: string | undefined, allowed: string[]): string {
-    const hostname = parseHostname(host)
-    const name = hostname ?? 'the client hostname'
-    return `add ${name} to ${ENV_VARS.mcpAllowedHosts} (currently ${allowed.join(',')})`
-}
-
-function describeOriginHint(origin: string | undefined): string {
-    const parsed = parseUrl(origin)
-    if (parsed === undefined) {
-        return `list the origin hostname in ${ENV_VARS.mcpAllowedOrigins}, or its scheme as <scheme>://*`
-    }
-
-    const schemeWildcard = `${parsed.protocol}//*`
-    return `add ${parsed.hostname} to ${ENV_VARS.mcpAllowedOrigins}, or ${schemeWildcard} for every origin of that scheme`
-}
-
-/**
- * `Host` has no scheme, so it is parsed the way the SDK parses it: as the
- * authority of a synthetic URL. A missing header yields nothing to suggest.
- */
-function parseHostname(host: string | undefined): string | undefined {
-    if (host === undefined) return undefined
-    return parseUrl(`http://${host}`)?.hostname
-}
-
-function parseUrl(value: string | undefined): URL | undefined {
-    if (value === undefined || value === '') return undefined
-
-    try {
-        const url = new URL(value)
-        return url.hostname === '' ? undefined : url
-    } catch {
-        return undefined
-    }
 }

@@ -43,14 +43,18 @@ the result; a `headers` or `env` entry is just text.
 ## Threat: unauthenticated network exposure
 
 Binding to `0.0.0.0` publishes the server to every reachable host. The MCP SDK's
-frameworks enable `Host`/`Origin` validation automatically for loopback binds and
-**drop it** when you bind elsewhere, so the protection you had locally disappears
-exactly when it matters most.
+frameworks default to `Host`/`Origin` validation for loopback binds and let it
+lapse elsewhere unless you supply the lists, so the protection you had locally
+disappears exactly when it matters most.
 
 **Rules.**
 
-- Refuse to start on a non-loopback address without a bearer token and an
-  explicit `allowedHosts` list. Fail closed rather than warning.
+- Refuse to start on a non-loopback address without a bearer token. Fail closed
+  rather than warning.
+- Install `Origin` validation on every bind: the MCP specification makes it a
+  MUST. Default to the loopback hostnames and let a client add its origin.
+- Treat `Host` validation as a best-effort extra: it rejects a rebound `Host`
+  header, but the token is what gates a reachable port.
 - Require a long random token (32+ characters, `openssl rand -hex 32`).
 - Plain HTTP exposes the bearer to anyone on the path. Terminate TLS at a reverse
   proxy (Caddy, nginx) or run over WireGuard/Tailscale/SSH.
@@ -61,9 +65,10 @@ exactly when it matters most.
 A malicious page resolves its own hostname to `127.0.0.1`, so the browser treats
 a local server as same-origin and can call it.
 
-**Mitigation.** Validate the `Host` header against an allowlist, and validate
-`Origin` for browser origins. The SDK adapters do this for you on loopback binds;
-when binding publicly you must supply the lists.
+**Mitigation.** Validate the `Origin` header (a MUST in the specification) and,
+optionally, `Host`. A non-browser client sends no `Origin`, so an allowlist there
+only constrains browser contexts. Neither replaces authentication: a rebound page
+cannot attach a bearer token without triggering a CORS preflight.
 
 ## Threat: privilege creep in tool design
 
